@@ -1,0 +1,331 @@
+---
+title: 'Homework 4: Machine Learning'
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(caret)
+library(stringr)
+library(tree)
+library(MASS)
+library(e1071)
+library(splitstackshape)
+library(randomForest)
+```
+
+## Algorithmic Bias
+In May 2016, Jeff Larson and others from ProPublica published a story about [algorithmic bias in criminal justice risk assessment scores](https://www.propublica.org/article/machine-bias-risk-assessments-in-criminal-sentencing). These scores are used to inform decisions about who can be set free at every stage of the criminal justice system, from assigning bond amounts to even more fundamental decisions about defendants’ freedom. In Arizona, Colorado, Delaware, Kentucky, Louisiana, Oklahoma, Virginia, Washington and Wisconsin, the results of such assessments are given to judges during criminal sentencing.
+
+In 2014, then U.S. Attorney General Eric Holder warned that the risk scores might be injecting bias into the courts. He called for the U.S. Sentencing Commission to study their use. "Although these measures were crafted with the best of intentions, I am concerned that they inadvertently undermine our efforts to ensure individualized and equal justice," he said, adding, "they may exacerbate unwarranted and unjust disparities that are already far too common in our criminal justice system and in our society." The sentencing commission did not, however, launch a study of risk scores. So ProPublica did, as part of a larger examination of the powerful, largely hidden effect of algorithms in American life.
+
+ProPublica obtained the risk scores assigned to more than 7,000 people arrested in Broward County, Florida, in 2013 and 2014 and checked to see how many were charged with new crimes over the next two years. The score proved remarkably unreliable in forecasting violent crime. In addition, ProPublica was able to show the algorithm was racially biased. 
+
+ProPublica completed a thorough analysis involving logistic regression, survival analysis and other statistical methods ([check out more details here if interested](https://www.propublica.org/article/how-we-analyzed-the-compas-recidivism-algorithm/)), but for this assignment you will be exploring how the algorithm is biased and communicating this bias. 
+
+The data for ProPublica's analysis is contained in the file `compas-scores-two-years.csv`. Below are the variables we will be using:
+
+* `race`: Race of the individual
+* `two_year_recid`: Did the individual reoffend (commit another crime) within 2 years?
+* `decile_score`: Risk score, 1-10
+* `score_text`: score group, "Low": `decile_score` = 1-3, "Medium": `decile_score` = 4-7, "High": `decile_score` = 8-10
+
+### Question 1
+While there are several race/ethnicity categories represented in this dataset, we will limit our analyses to those who self-identified as Caucasian or African-American. Read in the data and filter the data frame to only include Caucasian and African-American individuals. How many African-American individuals are represented in this dataset and how many Caucasian individuals are represented?
+
+```{r, warning=FALSE, message=FALSE}
+dat <- read_csv("compas-scores-two-years.csv")
+
+# filtering data 
+df <- dat %>% filter(race == "Caucasian" | race == "African-American")
+# checking data
+head(df)
+
+# African American individuals:
+df %>% group_by(race) %>% tally()
+```
+
+### Question 1 Answer
+There are 3,696 African-American individuals represented in this subset and there are 2,454 Caucasian individuals represented in this subset. 
+
+### Question 2
+Make 2 bar charts of `decile_score`, one for each race group. What do you notice about the distributions of scores for the two groups?
+
+```{r}
+# filtering by Caucasian, and creating a bar plot
+df %>% filter(race == "Caucasian") %>%
+  ggplot(aes(decile_score)) + 
+  geom_bar(fill = "skyblue2") + 
+  ggtitle("Bar Chart of Caucasian Sub-Sample") + 
+  xlab("Decile Score") +
+  ylab("Count")
+
+# filtering by African American, and creating a bar plot
+df %>% filter(race == "African-American") %>%
+  ggplot(aes(decile_score)) + 
+  geom_bar(fill = "darkolivegreen3") + 
+  ggtitle("Bar Chart of African-American Sub-Sample") +
+  xlab("Decile Score") + 
+  ylab("Count")
+```
+
+### Question 2 Answers
+
+Both of these graphs display the counts of decile scores assigned to each sub-group (Caucasian and African-American) of people who have committed a crime in Broward county, Florida. A high decile-score suggests that the individual is likely to commit crime, and a low decile score suggests that the individual is unlikely to commit crime. 
+
+In the graph displaying the Caucasian decile-scores, there is a clear downward trend, with a majority of individuals falling into the "low" range (1-3) and the fewest individuals falling into the "high" range (8-10). In fact, the lowest category (1) has nearly 700 people in it (~680), while the largest category (10) has fewer than 100. This would suggest that as a cohort, Caucasian individuals have a "low" risk of committing crime again on average. 
+
+In the graph displaying the African-American decile-scores,there is a roughly uniform distribuion, with 350-400 individuals in each category. This would suggest that as a cohort, African-American individuals have a "medium" risk of committing crime again on average.
+
+
+### Question 3
+Is the risk score a good predictor of two-year recidivism (i.e., committing another crime within 2 years)? Create a new variable called `binary_score` that is equal to 0 if `score_text` is equal to "Low" (this will be the "low-risk" group) and 1 otherwise (this will be the "high-risk" group). 
+
+Create a 2x2 table of `binary_score` and `two_year_recid` using the `table` function. Calculate accuracy, sensitivity, specificity, false positive rate and false negative rate by hand. (Note that you are not able to use the `confusionMatrix` function because you are not testing a model here.) 
+
+What is the accuracy? Are the sensitivity and specificity balanced? Are the false positive rate and false negative rate balanced?  
+
+* Here, false positive rate is the number of false positives over the total number of true negatives, and false negative rate is the number of false negatives over the total number of true positives.
+
+
+```{r}
+# creating binary variables based on the score text
+df_binary <- df %>% 
+  mutate(binary_score = ifelse(score_text == "Low", 0, 1))
+
+# check data
+head(df_binary)
+
+# table of Binary scores and recidivism
+table(df_binary$binary_score, df_binary$two_year_recid, dnn = c("Binary Prediction", "Recidivism"))
+
+# let commiting crime be a positive prediction (equal to 1)
+# let not commiting a crime be a negative prediction (equal to 0)
+
+# sensitivity => positive crime prediction / all actual crime => TP / (TP + FN)
+# specificity =>  negative crime prediction / all non-crime => TN / (TN + FP)
+# false positive rate => FP / (FP + TN)
+# false negative reate => FN / (FN + TP)
+# accuracy => all true positives + all true negatives / all predictions
+
+# calculations
+sens = 1874/(1874 + 993)
+spec = 2129/(2129 + 1154)
+FPR = 1154/(1154+2129)
+FNR = 993/(1874+993)
+accuracy = (2129+1874)/(2129+1874+993+1154)
+
+# printing the calculations
+print(paste0("The accuracy is ", round(accuracy,3)))
+print(paste0("The sensitivity is ", round(sens,3)))
+print(paste0("The specificity is ", round(spec,3)))
+print(paste0("The false positive rate is ", round(FPR,3)))
+print(paste0("The false negative rate is ", round(FNR,3)))
+```
+
+### Question 3 Answer
+
+The sensitivity and specificity seem close to balanced, but not quite. The sensitivity is 0.006 higher than the specificity. Similarly, the FPR and FNR are close to balanced, but the FPR is 0.006 higher than the FNR. It is feasible that one may consider this balanced, depending on how precise the measurements must be, and how the problem is defined. 
+
+
+### Question 4
+Now calculate the accuracy, sensitivity, specificity, false positive rate and false negative rate for each race group. Again, calculate these values without using `confusionMatrix`. Does the algorithm perform better for one group over the other? Describe how the model is biased. 
+
+* Hint: think about what false positives, false negatives, false positive rate and false negative rate mean in this context. 
+
+```{r}
+# African-American
+# table of Binary scores and recidivism
+dfA<- filter(df_binary, race == "African-American")
+table(dfA$binary_score, dfA$two_year_recid, dnn = c("Binary Prediction", "Recidivism"))
+
+sens = 1369/(1369 + 532)
+spec = 990 / (990 + 805)
+FPR = 805 / (805 + 990)
+FNR = 532 / (532 + 1369)
+accuracy = (1369+990)/(3696)
+
+print(paste0("The accuracy for African-Americans is ", round(accuracy,3)))
+print(paste0("The sensitivity for African-Americans is ", round(sens,3)))
+print(paste0("The specificity for African-Americans is ", round(spec,3)))
+print(paste0("The false positive rate for African-Americans is ", round(FPR,3)))
+print(paste0("The false negative rate for African-Americans is ", round(FNR,3)))
+```
+
+```{r}
+# Caucasian 
+# table of Binary scores and recidivism
+dfc <- filter(df_binary, race == "Caucasian")
+table(dfc$binary_score, dfc$two_year_recid, dnn = c("Binary Prediction", "Recidivism"))
+
+sens = 505 / (505 + 461)
+spec = 1139 / (1139 + 349)
+FPR = 349 / (349 + 1139)
+FNR =  461 / (461 + 505)
+accuracy = (1139 + 505)/(2454)
+
+print(paste0("The accuracy for Caucasians is ", round(accuracy,3)))
+print(paste0("The sensitivity for Caucasians is ", round(sens,3)))
+print(paste0("The specificity for Caucasians is ", round(spec,3)))
+print(paste0("The false positive for Caucasians rate is ", round(FPR,3)))
+print(paste0("The false negative for Caucasians rate is ", round(FNR,3)))
+```
+
+### Question 4 Answer 
+
+The overall accuracy is higher in the Caucasian group at 0.67 compared to the African-American group at 0.638. Notably, the false positive rate is very high for African Americans at 0.448, and relatively low for Caucasians at 0.235, indicating that it is far more common for African-Americans to be falsely classified as high risk when compared to Caucasians. This suggests that there is likely a bias against African-Americans in this model. 
+
+
+
+
+## Fetal Health
+Reduction of child mortality is reflected in several of the United Nations' Sustainable Development Goals and is a key indicator of human progress. The UN expects that countries aim to reduce under‑5 mortality to at least as low as 25 per 1,000 live births by 2030.
+
+Parallel to the notion of child mortality is of course maternal mortality, which accounts for 295,000 deaths during and following pregnancy and childbirth (as of 2017). The vast majority of these deaths (94%) occurred in low-resource settings, and most could have been prevented.
+
+Cardiotocograms (CTGs) are a simple and cost accessible option to assess fetal health, allowing health care professionals to take action in order to prevent child and maternal mortality. The equipment itself works by sending ultrasound pulses and reading its response, thus shedding light on fetal heart rate (FHR), fetal movements, uterine contractions and more.
+
+We'll be using a dataset that contains 2,126 records of features extracted from Cardiotocogram exams including the baseline fetal heart rate, uterine contractions, and fetal movement. For more details about the dataset, visit this [Kaggle page](https://www.kaggle.com/andrewmvd/fetal-health-classification). The outcome of interest is fetal health classification:
+
+* 1: Normal
+* 2: Suspect
+* 3: Pathological
+
+We will be using the features available in this dataset to classify fetal health.
+
+Use the following code to read in the data and split it into training and test sets with 60% of the data in the training set and 40% in the test set. Here we use a new function, `stratified`, from the `splitstackshape` package to split the data because we have 3 classes that are not balanced, meaning the number of observations in each class is not equivalent. The `stratified` function samples the same percent of samples from each class - in this case, fetal class. Note: keep `set.seed(1)` so you get the same train/test split and model predictions we do. 
+
+```{r, warning=FALSE, message=FALSE}
+fetal <- read_csv("fetal_health.csv")
+
+set.seed(1)
+
+x <- stratified(fetal, "fetal_health", 0.6, keep.rownames = TRUE)
+train_set <- x %>% dplyr::select(-rn)
+train_index <- as.numeric(x$rn)
+test_set <- fetal[-train_index,]
+```
+
+### Question 5
+Fit a decision tree (classification tree) that predicts `fetal_health` using all other variables in the dataset. What is the overall accuracy of the model, and accuracy for each class? Is the accuracy balanced across classes? Hint: You may need to calculate the accuracy for each class by hand using the confusion matrix.
+
+```{r}
+# write decision tree to predict outcomes as factors as opposed to numerically
+library(rpart)
+
+# redoing training and testing sets as factors 
+trainset <- train_set %>% mutate(fetal_health = as.factor(fetal_health))
+testset <- test_set %>% mutate(fetal_health = as.factor(fetal_health))
+# fitting the decision tree using all possible covariates
+fit_tree = tree((fetal_health) ~ ., data = trainset)
+
+# plotting the tree
+plot(fit_tree)
+text(fit_tree, pretty = 0)
+
+# summary of tree
+summary(fit_tree)
+
+# predicing values
+pred <- predict(fit_tree, newdata = test_set, type="class")
+# putting prediction and test_set into table
+pred2 <- table(pred=pred, truth=test_set$fetal_health)
+# creating the confusion matrix using the table
+confusionMatrix(pred2)
+
+# calculating the accuracy for each factor:
+# accuracy factor 1:
+f1 = 644/(18+644)
+f2 = 78/(78+37+3)
+f3 = 63/70
+
+print(paste0("The accuracy for factor 1 is: ",f1))
+print(paste0("The accuracy for factor 2 is: ",f2))
+print(paste0("The accuracy for factor 3 is: ",f3))
+```
+
+### Answer Q5:
+The accuracy is not balanced across classes, where factor 1 has the highest class sensitivity at about 97.28%, factor 3 is close but not equal at about 90.00%, amd factor 2 is far behind with only about 66.10% accuracy. 
+
+Although this makes for a relatively high overall accuracy of 92.35%
+
+### Question 6
+Fit a random forest that predicts `fetal_health` using all other variables in the dataset. What is the overall accuracy of the model, and accuracy for each class? Is the accuracy balanced across classes? Hint: You may need to calculate the accuracy for each class by hand using the confusion matrix.
+
+```{r}
+# fitting the random forest
+fit_rf = randomForest(fetal_health ~ ., data = trainset)
+# fitting a prediction
+pred_rf = predict(fit_rf, newdata=testset, type="class")
+# calculating confusion matrix
+confusionMatrix(pred_rf, testset$fetal_health)
+
+# calculating accuracy of each class:
+rf1 = 651/(651+11)
+rf2 = 91/(91+27)
+rf3 = 57/(57+6+7)
+
+# calculated the class sensitivity to check confusion matrix
+print(paste0("The class sensitivity for factor 1 is: ",rf1))
+print(paste0("The class sensitivity for factor 2 is: ",rf2))
+print(paste0("The class sensitivity for factor 3 is: ",rf3))
+```
+### Answer Question 6
+
+The accuracy across classes is not balanced. Factor 1 has high class sensitivity at about 98.34%, with factor 3 the next highest of 81.43%, and finally factor 2 at 77.12%. These class sensitivities are all fall apart and thus not balanced. 
+
+This makes for an overall accuracy of 94.00%
+
+### Question 7
+Fit a kNN model with k = 4 that predicts `fetal_health` using all other variables in the dataset. What is the overall accuracy of the model, and accuracy for each class? Is the accuracy balanced across classes? Hint: You may need to calculate the accuracy for each class by hand using the confusion matrix.
+
+```{r}
+# fitting knn model
+fit_knn <- knn3(fetal_health~., data = trainset, k = 4)
+# prediction model
+pred_knn_4_hat <- predict(fit_knn, newdata = testset)
+# finding max value
+pred_knn_4 <- apply(pred_knn_4_hat,1,which.max)
+# calculating confusion matrix
+confusionMatrix(as.factor(pred_knn_4),  testset$fetal_health)
+
+# hand calculation
+kf1 = 643/(643+15+4)
+kf2 = 63/(63+55)
+kf3 = 48/(22+48)
+
+# calculating class sensitivity 
+print(paste0("The class sensitivity for factor 1 is: ",kf1))
+print(paste0("The class sensitivity for factor 2 is: ",kf2))
+print(paste0("The class sensitivity for factor 3 is: ",kf3))
+```
+
+### Answer Question 7
+The accuracy is not balanced across factors. For example, factor 1 has an accuracy of 97.13%, factor 3 has an accuracy of 68.57%, and factor 2 has an accuracy of 53.40%. 
+
+The overall accuracy is 88.71%. 
+
+
+
+### Question 8
+Of the models you fit in questions 5-7, which model would you choose as the best model for predicting fetal health category? Justify your answer. Be sure to include diagnostic metrics (for example, accuracy, sensitivity, specificity, AUROC, etc.) as part of your justification. You do not need to use all of these metrics - just be sure to mention at least 1 of them. Note there is no one right answer for this question. The point is to make you critically evaluate different models and make an informed choice in model.
+
+### Question 8 Answer
+The models produced in questions 5-7 serve to predict fetal health, and observe the following range: 1 = normal, 2 = suspect, and 3 = pathological. It is important to diagnose these cases correctly, particularly to address any unwell fetuses, and thus prevent child and maternal mortality. 
+
+So for this, the KNN model has the worst overall accuracy at 88.71%, and a low sensitivity rate for pathological cases 68.57%, which are the cases that are most at risk. 
+
+The decision tree has an overall accuracy of 92.35% with sensitivity for the pathological cases at 90%. These sensitivies are both high relative to the KNN model. 
+
+Finally, the random forest has the highest overall accuracy at 94%. However, it's sensitivity for pathological cases is 81%. The pathological case sensitivity is higher than KNN, but lower than the decision tree. 
+
+So, if we compare the random forest and decison tree, it is not immediately clear which  model is better, and would likely have to be considered on a case by case basis (i.e. by consideration of prevalence and resource use). If we compare class 2 (suspect), the second most at risk case, the random forest has an accuracy of 77.12%, which is higher than the decision tree model's accuracy for suspect classes at 66.10%. So overall, the decision tree is best at predicting the pathological cases, and random forest performs better at predicting the overall accuracy, suspect cases, and normal cases. 
+
+So, although the random forest performs the best as a whole, I would default to using the decision tree because it is best at predicting the most serious cases, which are the ones that are most critical to diagnose. 
+
+
+
+
+
